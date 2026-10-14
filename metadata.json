@@ -1,6 +1,11 @@
 {
   "name": "Personalized Interview Trainer",
   "description": "College CEP AI-powered mock interview platform that adapts questions dynamically to student answers, analyzes resumes, evaluates STAR answers and communication, and builds custom improvement plans.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "CAMERA",
+    "MICROPHONE"
+  ],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

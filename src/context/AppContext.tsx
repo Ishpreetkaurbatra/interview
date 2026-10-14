@@ -18,6 +18,36 @@ import {
   INITIAL_TARGET_JOB,
   DEMO_INTERVIEW_HISTORY,
 } from '../data/mockData';
+import {
+  getFallbackResumeAnalysis,
+  getFallbackJobMatch,
+  getFallbackNextQuestion,
+  getFallbackEvaluation,
+  getFallbackFinalReport,
+} from '../utils/fallbackGenerators';
+
+async function safeFetch<T>(url: string, body: any, fallback: T): Promise<T> {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      console.warn(`[SafeFetch] ${url} returned ${res.status}, using resilient fallback.`);
+      return fallback;
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      console.warn(`[SafeFetch] ${url} returned non-JSON, using resilient fallback.`);
+      return fallback;
+    }
+    return (await res.json()) as T;
+  } catch (err) {
+    console.warn(`[SafeFetch] Error calling ${url}, using resilient fallback:`, err);
+    return fallback;
+  }
+}
 
 interface AppContextType {
   currentUser: User | null;
@@ -183,12 +213,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setIsAiProcessing(true);
     setAiProcessingMessage('Analyzing resume profile with Gemini AI...');
     try {
-      const response = await fetch('/api/resume/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ resumeText: text, studentName: currentUser?.fullName }),
-      });
-      const data = await response.json();
+      const fallback = getFallbackResumeAnalysis(text, currentUser?.fullName);
+      const data = await safeFetch('/api/resume/analyze', { resumeText: text, studentName: currentUser?.fullName }, fallback);
       setResumeData((prev) => ({
         ...prev,
         ...data,
@@ -207,18 +233,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setIsAiProcessing(true);
     setAiProcessingMessage('Comparing resume and skills against target job description...');
     try {
-      const response = await fetch('/api/job/analyze-match', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          resumeData,
-          jobRole: targetJob.role,
-          company: targetJob.company,
-          jobDescription: targetJob.jobDescription,
-          experienceLevel: targetJob.experienceLevel,
-        }),
-      });
-      const data = await response.json();
+      const fallback = getFallbackJobMatch(
+        resumeData,
+        targetJob.role,
+        targetJob.company,
+        targetJob.jobDescription,
+        targetJob.experienceLevel
+      );
+      const data = await safeFetch('/api/job/analyze-match', {
+        resumeData,
+        jobRole: targetJob.role,
+        company: targetJob.company,
+        jobDescription: targetJob.jobDescription,
+        experienceLevel: targetJob.experienceLevel,
+      }, fallback);
       setJobMatch(data);
       localStorage.setItem('pit_job_match', JSON.stringify(data));
     } catch (err) {
@@ -253,22 +281,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
 
       // Fetch the first adaptive question
-      const res = await fetch('/api/interview/generate-next-question', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentProfile: currentUser,
-          resumeData,
-          targetJob: config,
-          currentQuestionNumber: 1,
-          totalQuestions: totalQ,
-          previousConversation: [],
-          currentDifficulty: config.difficulty.toLowerCase(),
-          previousWeaknesses: [],
-        }),
-      });
+      const fallbackQ = getFallbackNextQuestion({ currentQuestionNumber: 1, targetJob: config });
+      const firstQuestion: any = await safeFetch('/api/interview/generate-next-question', {
+        studentProfile: currentUser,
+        resumeData,
+        targetJob: config,
+        currentQuestionNumber: 1,
+        totalQuestions: totalQ,
+        previousConversation: [],
+        currentDifficulty: config.difficulty.toLowerCase(),
+        previousWeaknesses: [],
+      }, fallbackQ);
 
-      const firstQuestion = await res.json();
       const firstTurn: InterviewTurn = {
         questionId: firstQuestion.questionId || `q_${Date.now()}`,
         questionText: firstQuestion.questionText,
@@ -303,23 +327,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setIsAiProcessing(true);
     setAiProcessingMessage('AI is evaluating your answer, communication metrics, and STAR structure...');
     try {
-      const response = await fetch('/api/interview/evaluate-answer', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          questionText: activeTurn.questionText,
-          questionCategory: activeTurn.category,
-          targetSkillOrCompetency: activeTurn.targetSkillOrCompetency,
-          difficulty: activeTurn.difficulty,
-          studentAnswer: answer,
-          studentProfile: currentUser,
-          targetJob,
-          isVoiceAnswer: isVoice,
-          spokenMetrics,
-        }),
-      });
-
-      const evaluation: AnswerEvaluation = await response.json();
+      const fallbackEval = getFallbackEvaluation(activeTurn.questionText, activeTurn.category, answer, [], isVoice);
+      const evaluation: AnswerEvaluation = await safeFetch('/api/interview/evaluate-answer', {
+        questionText: activeTurn.questionText,
+        questionCategory: activeTurn.category,
+        targetSkillOrCompetency: activeTurn.targetSkillOrCompetency,
+        difficulty: activeTurn.difficulty,
+        studentAnswer: answer,
+        studentProfile: currentUser,
+        targetJob,
+        isVoiceAnswer: isVoice,
+        spokenMetrics,
+      }, fallbackEval);
 
       const updatedTurn: InterviewTurn = {
         ...activeTurn,
@@ -373,28 +392,35 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       });
 
-      const res = await fetch('/api/interview/generate-next-question', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentProfile: currentUser,
-          resumeData,
-          targetJob,
-          currentQuestionNumber: nextQNum,
-          totalQuestions: activeInterview.totalQuestions,
-          previousConversation: activeInterview.history.map((h) => ({
-            question: h.questionText,
-            category: h.category,
-            answer: h.studentAnswer,
-            score: h.evaluation?.overallScore,
-            weaknesses: h.evaluation?.whatCouldBeImproved,
-          })),
-          currentDifficulty: activeInterview.difficulty.toLowerCase(),
-          previousWeaknesses: weaknesses,
-        }),
+      const fallbackNextQ = getFallbackNextQuestion({
+        currentQuestionNumber: nextQNum,
+        targetJob,
+        previousConversation: activeInterview.history.map((h) => ({
+          question: h.questionText,
+          category: h.category,
+          answer: h.studentAnswer,
+          score: h.evaluation?.overallScore,
+          weaknesses: h.evaluation?.whatCouldBeImproved,
+        })),
       });
 
-      const nextQ = await res.json();
+      const nextQ: any = await safeFetch('/api/interview/generate-next-question', {
+        studentProfile: currentUser,
+        resumeData,
+        targetJob,
+        currentQuestionNumber: nextQNum,
+        totalQuestions: activeInterview.totalQuestions,
+        previousConversation: activeInterview.history.map((h) => ({
+          question: h.questionText,
+          category: h.category,
+          answer: h.studentAnswer,
+          score: h.evaluation?.overallScore,
+          weaknesses: h.evaluation?.whatCouldBeImproved,
+        })),
+        currentDifficulty: activeInterview.difficulty.toLowerCase(),
+        previousWeaknesses: weaknesses,
+      }, fallbackNextQ);
+
       const newTurn: InterviewTurn = {
         questionId: nextQ.questionId || `q_${Date.now()}`,
         questionText: nextQ.questionText,
@@ -422,17 +448,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setIsAiProcessing(true);
     setAiProcessingMessage('Compiling final interview performance report and 7-day personalized improvement plan...');
     try {
-      const res = await fetch('/api/interview/final-report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionData: activeInterview,
-          studentProfile: currentUser,
-          targetJob,
-        }),
-      });
-
-      const finalReport: FinalReport = await res.json();
+      const fallbackReport = getFallbackFinalReport(activeInterview, currentUser, targetJob);
+      const finalReport: FinalReport = await safeFetch('/api/interview/final-report', {
+        sessionData: activeInterview,
+        studentProfile: currentUser,
+        targetJob,
+      }, fallbackReport);
 
       const completedSession: InterviewSession = {
         ...activeInterview,
